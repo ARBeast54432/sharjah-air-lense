@@ -6,5 +6,4 @@ plotly
 folium
 streamlit-folium
 python-dateutil
-earthengine-api
-google-auth-oauthlib
+
