@@ -1,5 +1,5 @@
-# app.py — Final full file (LIVE-only badges + provenance expander + footer)
-# Paste/overwrite your existing app.py with this file.
+# app.py — AirLens v2 with improved AQI (24-hour PM2.5 averaging)
+
 
 import os
 import traceback
@@ -15,63 +15,126 @@ import folium
 import plotly.graph_objects as go
 import io
 
-st.set_page_config(page_title="AirLens — NASA / TEMPO Demo", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="AirLens — NASA / TEMPO Demo (v2)", layout="wide", initial_sidebar_state="expanded")
 
 # --------------------------
-# Theme / palette (bold, readable)
+# Palette (dark-first)
 # --------------------------
 PALETTE = {
-    # Backgrounds
-    "bg": "#1A2633",         # dark bluish-black main background
-    "card": "#0F1B29",       # very dark card panels
-    "muted_card": "#14232F", # subtle contrast for secondary panels
+    "bg": "#062B36",         # slightly lighter deep blueish-black — overall page background
+    "card": "#0C2B36",       # panel background
+    "muted_card": "#0F3542", # subtle contrast for secondary panels
 
-    # Accents
-    "accent": "#1E90FF",     # bright dodger blue for highlights
-    "accent2": "#00BFFF",    # secondary cyan-blue gradient
+    # Accents (use for buttons, highlights, sparkline lines)
+    "accent": "#00D1FF",     # electric cyan — primary pop
+    "accent2": "#7AF0FF",    # softer cyan for gradients / fills
+    "accent3": "#9B5CFF",    # neon violet for secondary contrast (sparingly)
 
     # Text
-    "text": "#0D1117",       # dark text for readability on light-ish cards
-    "muted_text": "#4F5C6C", # muted dark gray for secondary info
+    "text": "#E8F7FF",       # very light, cool white — reads clean on dark bg
+    "muted_text": "#A1C1CE", # calm cyan-gray for secondary text
 
     # Status / AQI
-    "good": "#2DD36F",       # green for good
-    "moderate": "#FFD93D",   # yellow-orange for moderate
-    "unhealthy": "#FF5E57",  # red for unhealthy
+    "good": "#2DD36F",
+    "moderate": "#FFD93D",
+    "unhealthy": "#FF5E57",
 
-    # Map tiles
+    # Alert / Accent contrast (use for small CTA or critical badges)
+    "coral": "#FF7A59",
+
+    # Map tiles (dark friendly)
     "map_tiles": "CartoDB positron"
 }
 
-
-
 # --------------------------
-# Page CSS (keeps UI compact & modern)
+# Robust app-wide CSS
 # --------------------------
 CSS = f"""
 <style>
-html, body, .main {{ background: {PALETTE['bg']} !important; color: {PALETTE['text']} }}
+:root {{
+  --bg: {PALETTE['bg']};
+  --card: {PALETTE['card']};
+  --muted-card: {PALETTE['muted_card']};
+  --text: {PALETTE['text']};
+  --muted-text: {PALETTE['muted_text']};
+  --accent: {PALETTE['accent']};
+  --accent2: {PALETTE['accent2']};
+  --accent3: {PALETTE['accent3']};
+}}
+
+html, body, .stApp, .stApp .main, .block-container, .reportview-container, .main {{
+  background-color: var(--bg) !important;
+  color: var(--text) !important;
+  height: 100%;
+}}
+
+html::before {{
+  /* subtle dark overlay to ensure contrast */
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(rgba(0,0,0,0.28), rgba(0,0,0,0.28));
+  z-index: 1;
+  pointer-events: none;
+}}
+
+.stApp > .main, .block-container {{
+  position: relative;
+  z-index: 2;
+}}
+
 .stApp > header {{ display: none; }}
+
 .header-card {{
-  background: linear-gradient(90deg, {PALETTE['accent']} 0%, {PALETTE['accent2']} 100%);
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent3) 100%);
   padding:18px; border-radius:12px; color: white;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.5); margin-bottom:12px;
+  box-shadow: 0 12px 50px rgba(0,0,0,0.55), 0 0 30px rgba(0,209,255,0.04);
+  margin-bottom:12px;
 }}
+
 .panel-card {{
-  background: {PALETTE['card']}; padding:14px; border-radius:12px;
+  background: var(--card) !important; padding:14px; border-radius:12px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.45); margin-bottom:12px;
+  transition: box-shadow 300ms ease, border-color 300ms ease, transform 200ms ease;
 }}
-.small-muted {{ color:{PALETTE['muted_text']}; font-size:13px; }}
-.metric-val {{ font-weight:900; font-size:28px; color:{PALETTE['text']}; }}
+
+/* AQI-based accents: border + glow */
+.panel-card.aqi-good {{
+  border: 1px solid rgba(45,211,111,0.10);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+}}
+.panel-card.aqi-moderate {{
+  border: 1px solid rgba(255,217,61,0.10);
+  box-shadow: 0 8px 30px rgba(255,217,61,0.03), 0 0 18px rgba(0,209,255,0.02);
+}}
+.panel-card.aqi-unhealthy {{
+  border: 1px solid rgba(255,94,87,0.12);
+  box-shadow: 0 8px 30px rgba(255,94,87,0.06), 0 0 28px rgba(255,122,89,0.04);
+  transform: translateY(-2px);
+}}
+.panel-card.aqi-very-unhealthy {{
+  border: 2px solid rgba(255,80,80,0.18);
+  box-shadow: 0 12px 50px rgba(255,94,87,0.12), 0 0 40px rgba(255,122,89,0.08);
+  transform: translateY(-3px);
+}}
+
+.small-muted {{ color:var(--muted-text); font-size:13px; }}
+.metric-val {{ font-weight:900; font-size:28px; color:var(--text); }}
 .badge-live {{ background: {PALETTE['good']}; color: #042012; padding:6px 10px; border-radius:999px; font-weight:800; }}
-.poll-box {{ background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)); padding:12px; border-radius:10px; }}
-.kv {{ font-weight:800; font-size:20px; color:{PALETTE['text']}; }}
-.tooltip {{ color:{PALETTE['muted_text']}; font-size:13px; }}
-a, a:link {{ color: {PALETTE['accent']}; }}
+.poll-box {{ background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.004)); padding:12px; border-radius:10px; }}
+.kv {{ font-weight:800; font-size:20px; color:var(--text); }}
+.tooltip {{ color:var(--muted-text); font-size:13px; }}
+a, a:link {{ color: var(--accent); }}
+
+/* Force some common streamlit containers to be transparent so card backgrounds show */
+.css-1d391kg, .css-18e3th9, .css-ffhzg2, .css-1lcbmhc {{
+  background: transparent !important;
+  box-shadow: none !important;
+}}
 </style>
 """
-st.markdown(CSS, unsafe_allow_html=True)
 
+st.markdown(CSS, unsafe_allow_html=True)
 
 # --------------------------
 # Earth Engine (optional)
@@ -107,17 +170,18 @@ POLLUTANT_UNITS = {
     "co": "ppm"
 }
 
-
 # --------------------------
 # Helpers
 # --------------------------
-def safe_get(url, params=None, timeout=8):
+
+def safe_get(url, params=None, timeout=10):
     try:
         r = requests.get(url, params=params, timeout=timeout)
         r.raise_for_status()
         return r
     except Exception:
         return None
+
 
 def normalize_label(lbl: str) -> str:
     if lbl is None:
@@ -126,6 +190,82 @@ def normalize_label(lbl: str) -> str:
     s = s.replace("₂", "2").replace("₃", "3").replace("₅", "5")
     s = re.sub(r"[^a-z0-9]", "", s)
     return s
+
+
+def iso_to_dt(s):
+    if s is None:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        try:
+            return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S%z")
+        except Exception:
+            return None
+
+# --------------------------
+# 24-hour PM2.5 fetch & helper
+# --------------------------
+OPENAQ_MEAS_ENDPOINT = "https://api.openaq.org/v2/measurements"
+MIN_SAMPLES_24H = 2  # require at least this many samples in 24h to use the 24h mean
+
+
+def fetch_24h_pm25_mean(lat, lon, radius_meters):
+    """
+    Fetch pm25 measurements within past 24 hours from OpenAQ and return:
+    (mean_value_in_ugm3, count, latest_ts_str)
+    Returns (None, 0, None) if nothing useful found.
+    """
+    try:
+        date_from = (datetime.utcnow() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        params = {
+            "coordinates": f"{lat},{lon}",
+            "radius": int(radius_meters or 20000),
+            "parameter": "pm25",
+            "date_from": date_from,
+            "limit": 1000,
+            "page": 1,
+            "sort": "desc",
+            "order_by": "date"
+        }
+        resp = safe_get(OPENAQ_MEAS_ENDPOINT, params=params, timeout=12)
+        if not resp:
+            return None, 0, None
+        j = resp.json()
+        results = j.get("results", []) if isinstance(j, dict) else []
+        vals = []
+        latest_ts = None
+        for r in results:
+            v = r.get("value")
+            unit = (r.get("unit") or "").lower()
+            dt = None
+            if isinstance(r.get("date"), dict):
+                dt = r["date"].get("utc") or r["date"].get("local")
+            if not dt:
+                dt = r.get("date", {}).get("utc") if isinstance(r.get("date"), dict) else None
+            
+            try:
+                num = float(v)
+            except Exception:
+                try:
+                    num = float(str(v).replace(",", ""))
+                except Exception:
+                    continue
+           
+            if unit and "mg" in unit:
+                num = num * 1000.0
+            # otherwise assume it's already µg/m3 or ug/m3
+            vals.append((num, dt))
+            if dt:
+                if latest_ts is None or dt > latest_ts:
+                    latest_ts = dt
+        if not vals:
+            return None, 0, None
+        nums = [x[0] for x in vals]
+        mean = float(np.mean(nums))
+        return mean, len(nums), latest_ts
+    except Exception:
+        return None, 0, None
 
 # AQI conversion (EPA breakpoints)
 EPA_BP = [
@@ -137,6 +277,8 @@ EPA_BP = [
     (250.5, 350.4, 301, 400),
     (350.5, 500.4, 401, 500)
 ]
+
+
 def pm25_to_aqi(pm):
     try:
         pm = float(pm)
@@ -148,10 +290,12 @@ def pm25_to_aqi(pm):
             return int(round(aqi))
     return 500
 
+
 def format_time_utc(dt=None):
     if dt is None:
         dt = datetime.utcnow()
     return dt.strftime("%Y-%m-%d %H:%M UTC")
+
 
 def hourly_forecast_pm(current_pm, hours=24, variance=0.03):
     rng = np.random.default_rng(seed=int((float(current_pm) * 100) % 10000))
@@ -162,13 +306,14 @@ def hourly_forecast_pm(current_pm, hours=24, variance=0.03):
         vals.append(round(last, 1))
     return vals
 
+
 def sparkline(vals):
     fig = go.Figure(go.Scatter(y=vals, mode="lines", line=dict(width=2, color=PALETTE['accent']), fill='tozeroy'))
     fig.update_layout(margin=dict(t=2,b=2,l=2,r=2), height=60, paper_bgcolor='rgba(0,0,0,0)', xaxis=dict(visible=False), yaxis=dict(visible=False))
     return fig
 
 # --------------------------
-# Satellite / TEMPO helpers (EE) — safe
+# Satellite / TEMPO helpers (EE)
 # --------------------------
 def get_tempo_no2_via_ee(lat, lon, days_back=2):
     try:
@@ -211,6 +356,7 @@ def tempo_to_aod_proxy_from_no2(no2_col):
     except Exception:
         return None
 
+
 def fetch_satellite_proxy(lat, lon):
     if EE_AVAILABLE:
         try:
@@ -230,12 +376,12 @@ def fetch_satellite_proxy(lat, lon):
     return None, "DEMO_FALLBACK"
 
 # --------------------------
-# OpenAQ adaptive search (expanding radii; pseudo-latest fallback)
+# OpenAQ adaptive search
 # --------------------------
 def fetch_openaq_adaptive(lat, lon, radii=[5000, 20000, 50000, 100000, 200000]):
     base_latest = "https://api.openaq.org/v2/latest"
     base_meas = "https://api.openaq.org/v2/measurements"
-    # 1) try latest
+    # 1) try latest (fast)
     for r in radii:
         try:
             params = {"coordinates": f"{lat},{lon}", "radius": r, "limit": 100}
@@ -256,11 +402,11 @@ def fetch_openaq_adaptive(lat, lon, radii=[5000, 20000, 50000, 100000, 200000]):
                                 dt = m["date"].get("utc") or m["date"].get("local")
                             if not dt:
                                 dt = m.get("lastUpdated")
-                            parsed.append({"parameter": p, "value": v, "lastUpdated": dt})
+                            parsed.append({"parameter": p, "value": v, "lastUpdated": dt, "unit": m.get("unit")})
                         return res, r, parsed, "latest"
         except Exception:
             continue
-    # 2) try measurements for short-term mean
+    # 2) try measurements for short-term mean (slower but more reliable for concentration)
     for r in radii:
         try:
             params = {"coordinates": f"{lat},{lon}", "radius": r, "limit": 200, "date_from": (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")}
@@ -276,7 +422,6 @@ def fetch_openaq_adaptive(lat, lon, radii=[5000, 20000, 50000, 100000, 200000]):
                     if loc not in by_loc:
                         by_loc[loc] = {"measurements": [], "coords": m.get("coordinates")}
                     by_loc[loc]["measurements"].append(m)
-                # pick location with most samples
                 best_loc = max(by_loc.items(), key=lambda x: len(x[1]["measurements"]))[0]
                 best = by_loc[best_loc]
                 params_seen = {}
@@ -305,15 +450,16 @@ def fetch_openaq_adaptive(lat, lon, radii=[5000, 20000, 50000, 100000, 200000]):
     return None, None, [], None
 
 # --------------------------
-# UI controls: sidebar
+# UI controls
 # --------------------------
 st.sidebar.markdown("## Controls")
 show_24h = st.sidebar.checkbox("Show 24-hour forecast", value=False)
 use_adaptive = st.sidebar.checkbox("Adaptive OpenAQ radius (recommended)", value=True)
 forecast_var = st.sidebar.slider("Forecast variance (demo)", 1, 8, 3)
+pm25_correction = st.sidebar.slider("PM2.5 correction factor", 0.5, 1.5, 1.0, step=0.01, help="Multiply PM2.5 by this factor to correct systematic bias (demo)")
 
 # --------------------------
-# Header + Data provenance expander
+# Header + provenance
 # --------------------------
 st.markdown(f'<div class="header-card"><div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:26px;font-weight:900">AirLens</div><div style="font-size:13px;opacity:0.95">Integrates ground stations & satellite (TEMPO) — demo-ready</div></div><div style="text-align:right"><div style="font-weight:700;font-size:13px">{("EE ON" if EE_AVAILABLE else "EE OFF — demo fallback")}</div><div style="font-size:12px;opacity:0.85">Last update: {format_time_utc()}</div></div></div></div>', unsafe_allow_html=True)
 
@@ -326,18 +472,35 @@ with st.expander("Data provenance & notes (click to expand)", expanded=False):
     """)
 
 # --------------------------
-# Locations dropdown (simple, judge-friendly)
+# Locations
 # --------------------------
 LOCATIONS = {
     "Sharjah — Muweilah": (25.358, 55.478),
     "Sharjah — Al Majaz": (25.345, 55.381),
+    "Sharjah — Industrial Area": (25.3283, 55.4200),
     "Dubai — Deira": (25.271, 55.304),
+    "Dubai — Marina": (25.0800, 55.1400),
     "Abu Dhabi — Khalifa City": (24.433, 54.623),
+    "Abu Dhabi — Corniche": (24.4764, 54.3773),
     "Ajman — Corniche": (25.405, 55.513),
-    "London, UK": (51.5074, -0.1278),
+    "Ras Al Khaimah": (25.8007, 55.9762),
+    "Fujairah": (25.1288, 56.3265),
+    "Al Ain": (24.2075, 55.7447),
+    "Umm Al Quwain": (25.5643, 55.5550),
+    "Delhi, India": (28.7041, 77.1025),
+    "Kanpur, India": (26.4499, 80.3319),
+    "Lahore, Pakistan": (31.5497, 74.3436),
+    "Dhaka, Bangladesh": (23.8103, 90.4125),
+    "Karachi, Pakistan": (24.8607, 67.0011),
+    "Beijing, China": (39.9042, 116.4074),
+    "Mumbai, India": (19.0760, 72.8777),
+    "Chennai, India": (13.0827, 80.2707),
+    "Jakarta, Indonesia": (-6.2088, 106.8456),
+    "Tehran, Iran": (35.6892, 51.3890),
+    "Cairo, Egypt": (30.0444, 31.2357),
+    "São Paulo, Brazil": (-23.5505, -46.6333),
     "New York, USA": (40.7128, -74.0060),
     "Tokyo, Japan": (35.6762, 139.6503),
-    "Delhi, India": (28.7041, 77.1025),
     "Los Angeles, USA": (34.0522, -118.2437)
 }
 
@@ -350,46 +513,149 @@ if "last_location" not in st.session_state or st.session_state.last_location != 
 st.session_state.last_location = selected_location
 
 # --------------------------
-# Fetch ground (OpenAQ) + weather
+# Fetch ground (OpenAQ) + weather + satellite proxy
 # --------------------------
 st.info("Loading data (ground stations, weather, satellite)...")
 
 res, used_radius, parsed_measures, source_type = fetch_openaq_adaptive(lat, lon) if use_adaptive else fetch_openaq_adaptive(lat, lon, radii=[20000])
-
 if res is None:
     res = {}
 
 # prepare pollutant slots
 polls = {"pm25": None, "pm10": None, "no2": None, "so2": None, "o3": None, "co": None}
 live_flags = {k: False for k in polls}
+used_pm_source = "fallback"  # will be set to '24h_mean' or 'latest' etc.
+pm25_24h_count = 0
+pm25_24h_mean_val = None
 
+# Build polling raw lists (if any parsed_measures exist)
+polls_raw = {k: [] for k in polls.keys()}
 if parsed_measures:
     for m in parsed_measures:
         key = normalize_label(m.get("parameter"))
         val = m.get("value")
         ts = m.get("lastUpdated")
+        unit = m.get("unit") or m.get("unitName") or ""
+        if isinstance(unit, str):
+            unit = unit.strip().lower()
+        # only keep numeric values
         if key in polls and val is not None:
+            num = None
             try:
-                polls[key] = float(val)
+                num = float(val)
             except Exception:
-                polls[key] = val
-            if source_type == "latest":
-                live_flags[key] = True
-            elif source_type == "pseudo":
-                if ts:
-                    try:
-                        dtt = iso_to_dt(ts)
-                        if dtt:
-                            age_hr = (datetime.utcnow() - dtt).total_seconds() / 3600.0
-                            live_flags[key] = age_hr <= 48.0
-                        else:
-                            live_flags[key] = False
-                    except:
-                        live_flags[key] = False
-                else:
-                    live_flags[key] = False
+                try:
+                    num = float(str(val).replace(",", ""))
+                except Exception:
+                    num = None
+            if num is not None:
+                polls_raw[key].append({"value": num, "unit": unit, "ts": ts})
 
-# sensible fallbacks for missing pollutant values
+# helper: choose most recent measurement if available, otherwise median
+def choose_pm_value(entries):
+    if not entries:
+        return None, None
+    with_dt = []
+    without_dt = []
+    for e in entries:
+        d = iso_to_dt(e.get("ts"))
+        if d:
+            with_dt.append((d, e))
+        else:
+            without_dt.append(e)
+    if with_dt:
+        with_dt.sort(key=lambda x: x[0], reverse=True)
+        chosen = with_dt[0][1]
+        return chosen["value"], chosen.get("unit")
+    vals = [e["value"] for e in entries]
+    return float(np.median(vals)), entries[0].get("unit", "")
+
+# 1) Try robust 24h mean using expanding radii (preferred for AQI accuracy)
+radii_try = [5000, 20000, 50000, 100000, 200000]
+mean24 = None
+cnt24 = 0
+latest_ts24 = None
+for r in radii_try:
+    try:
+        m24, c24, ts24 = fetch_24h_pm25_mean(lat, lon, r)
+        if m24 is not None and c24 > 0:
+            mean24 = m24
+            cnt24 = c24
+            latest_ts24 = ts24
+            used_radius = r
+            # if we have enough samples, stop expanding
+            if cnt24 >= MIN_SAMPLES_24H:
+                break
+    except Exception:
+        continue
+
+# 2) Decide which PM2.5 to use for AQI
+pm25_for_aqi = None
+if mean24 is not None and cnt24 >= MIN_SAMPLES_24H:
+    # prefer 24h mean when enough samples exist
+    pm25_for_aqi = float(mean24) * float(pm25_correction)
+    used_pm_source = f"24h_mean (n={cnt24})"
+    pm25_24h_count = cnt24
+    pm25_24h_mean_val = mean24
+    # set displayed PM2.5 to the corrected 24h mean
+    polls["pm25"] = round(pm25_for_aqi, 1)
+    live_flags["pm25"] = True
+else:
+    # fallback: use latest/representative sample from parsed_measures if available
+    rep_val, rep_unit = choose_pm_value(polls_raw.get("pm25", []))
+    if rep_val is not None:
+        # handle units
+        u = (rep_unit or "").lower()
+        if "mg" in u:
+            rep_val = rep_val * 1000.0
+        # apply correction
+        rep_val = float(rep_val) * float(pm25_correction)
+        polls["pm25"] = round(rep_val, 1)
+        pm25_for_aqi = rep_val
+        used_pm_source = "latest/representative"
+        # determine live flag based on timestamps and source_type
+        if source_type == "latest":
+            live_flags["pm25"] = True
+        else:
+            all_ts = [iso_to_dt(e.get("ts")) for e in polls_raw.get("pm25", []) if iso_to_dt(e.get("ts"))]
+            if all_ts:
+                age_hr = (datetime.utcnow() - max(all_ts)).total_seconds() / 3600.0
+                live_flags["pm25"] = age_hr <= 48.0
+            else:
+                live_flags["pm25"] = False
+    else:
+        # last fallback: derive from pm10 or heuristic (keeps your existing fallback behaviour)
+        if polls.get("pm10") is not None:
+            try:
+                fallback_val = round(float(polls["pm10"]) * 0.6, 1)
+            except Exception:
+                fallback_val = round(5 + abs(math.sin(lat/12.0)) * 15, 1)
+        else:
+            fallback_val = round(5 + abs(math.sin(lat/12.0)) * 10, 1)
+        polls["pm25"] = float(fallback_val)
+        pm25_for_aqi = float(fallback_val)
+        used_pm_source = "fallback"
+        live_flags["pm25"] = False
+
+# Fill other pollutant slots using representative/latest logic (unchanged behaviour)
+for pol in ["pm10", "no2", "so2", "o3", "co"]:
+    ents = polls_raw.get(pol, [])
+    if ents:
+        val, unit = choose_pm_value(ents)
+        if val is None:
+            continue
+        polls[pol] = round(val, 2)
+        if source_type == "latest":
+            live_flags[pol] = True
+        else:
+            all_ts = [iso_to_dt(e.get("ts")) for e in ents if iso_to_dt(e.get("ts"))]
+            if all_ts:
+                age_hr = (datetime.utcnow() - max(all_ts)).total_seconds() / 3600.0
+                live_flags[pol] = age_hr <= 48.0
+            else:
+                live_flags[pol] = False
+
+# Ensure no None left (original fallback for missing values)
 if polls["pm25"] is None:
     if polls.get("pm10") is not None:
         try:
@@ -423,7 +689,7 @@ if wr:
     except Exception:
         weather = None
 
-# satellite integration (EE preferred)
+# satellite integration 
 aod_val, aod_source = fetch_satellite_proxy(lat, lon)
 if aod_val is None:
     aod_val = float(np.clip(float(polls["pm25"]) / 150.0, 0.03, 1.0))
@@ -431,14 +697,19 @@ if aod_val is None:
         aod_source = "PM2.5_proxy"
 
 # compute AQI
-aqi_now = pm25_to_aqi(polls["pm25"])
+try:
+    pm25_for_aqi = float(pm25_for_aqi)
+except Exception:
+    pm25_for_aqi = float(polls["pm25"]) if polls["pm25"] is not None else 0.0
+
+aqi_now = pm25_to_aqi(pm25_for_aqi)
 if aqi_now is None:
     try:
-        aqi_now = int(min(500, float(polls["pm25"]) * 4))
+        aqi_now = int(min(500, float(pm25_for_aqi) * 4))
     except:
         aqi_now = 0
 
-# fetch short pm history for forecast if possible
+# fetch short pm history for forecast if possible (unchanged)
 pm_history = []
 try:
     mr = safe_get("https://api.openaq.org/v2/measurements", params={"coordinates": f"{lat},{lon}", "radius": used_radius or 20000, "limit": 200, "date_from": (datetime.utcnow() - timedelta(days=3)).strftime("%Y-%m-%d")})
@@ -464,7 +735,7 @@ else:
     pm24 = []
     aqi24 = []
 
-# severity and advice
+# severity and advice 
 def severity_idx_pm25(pm):
     pm = float(pm)
     if pm <= 12: return 0
@@ -527,10 +798,21 @@ render_banner(aqi_now)
 # -------------------------
 # Layout
 # -------------------------
+def aqi_panel_class(aqi):
+    if aqi >= 150:
+        return "panel-card aqi-very-unhealthy"
+    if aqi >= 100:
+        return "panel-card aqi-unhealthy"
+    if aqi >= 50:
+        return "panel-card aqi-moderate"
+    return "panel-card aqi-good"
+
+panel_class = aqi_panel_class(aqi_now)
+
 left, right = st.columns([2.2, 1], gap="large")
 
 with left:
-    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown(f'<div class="{panel_class}">', unsafe_allow_html=True)
     st.markdown(f"**{selected_location}**  —  Lat {lat:.4f}, Lon {lon:.4f}")
     st.markdown(f"<div class='small-muted'>OpenAQ radius used: {(used_radius/1000) if used_radius else 'N/A'} km</div>", unsafe_allow_html=True)
     st.write("")
@@ -539,7 +821,6 @@ with left:
     a_col, b_col, c_col = st.columns([1,1,0.6])
     with a_col:
         st.markdown(f'<div style="text-align:center; padding:8px; border-radius:10px; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01))"><div class="metric-val">{polls["pm25"]} µg/m³</div><div class="small-muted">PM2.5</div></div>', unsafe_allow_html=True)
-        # show LIVE only; if not live show subtle 'Fallback' label
         if live_flags.get("pm25"):
             st.markdown(f'<div style="margin-top:6px"><span class="badge-live">LIVE</span> <span class="small-muted">OpenAQ</span></div>', unsafe_allow_html=True)
         else:
@@ -559,6 +840,12 @@ with left:
         st.markdown(f'<div class="small-muted">Satellite: <b>{aod_source}</b></div>', unsafe_allow_html=True)
 
     st.write("")
+    
+    prov_note = f"AQI source: {used_pm_source}"
+    if pm25_24h_mean_val is not None:
+        prov_note += f" — 24h mean: {round(pm25_24h_mean_val,1)} µg/m³ (n={pm25_24h_count})"
+    st.markdown(f"<div class='small-muted' style='margin-bottom:8px'>{prov_note}</div>", unsafe_allow_html=True)
+
     # Gauge
     fig = go.Figure(go.Indicator(mode="gauge+number", value=aqi_now, title={'text': "AQI (from PM2.5)"},
                                 gauge={'axis': {'range': [0,300]},
@@ -573,7 +860,7 @@ with left:
     st.plotly_chart(fig, use_container_width=True)
 
     # Download snapshot CSV (uses pandas)
-    snapshot_df = pd.DataFrame([{
+    snapshot_df = pd.DataFrame([{ 
         "location": selected_location,
         "lat": lat,
         "lon": lon,
@@ -584,6 +871,8 @@ with left:
         "o3": polls["o3"],
         "co": polls["co"],
         "aqi": aqi_now,
+        "aqi_pm25_used": round(pm25_for_aqi, 2),
+        "aqi_source": used_pm_source,
         "timestamp": format_time_utc()
     }])
     st.download_button("Download snapshot CSV", data=io.BytesIO(snapshot_df.to_csv(index=False).encode()), file_name="aq_snapshot.csv", mime="text/csv")
@@ -615,7 +904,7 @@ with left:
                 st.write("Forecast not available.")
 
 with right:
-    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown(f'<div class="{panel_class}">', unsafe_allow_html=True)
     st.markdown(f'<div style="font-size:16px; font-weight:800; color:{PALETTE["text"]}">Pollutant summary</div>', unsafe_allow_html=True)
     st.markdown('<div class="small-muted" style="margin-bottom:8px">Tap a pollutant to see mini-trend & source</div>', unsafe_allow_html=True)
 
@@ -632,7 +921,7 @@ with right:
             unit = POLLUTANT_UNITS.get(a_key, "")
             st.markdown(f"<div class='poll-box'><div class='kv'>{val} {unit}</div><div style='font-weight:700'>{a_label}</div><div class='small-muted' style='margin-top:6px'>{badge_html} {source_label}</div></div>", unsafe_allow_html=True)
 
-            # mini sparkline
+            
             try:
                 baseline = float(val) if isinstance(val, (int, float)) or (isinstance(val, str) and val.replace('.','',1).isdigit()) else 10.0
                 hist = [round(max(0.1, baseline + np.random.normal(0, max(0.1, baseline*0.05))),1) for _ in range(10)]
@@ -649,7 +938,6 @@ with right:
                 unitb = POLLUTANT_UNITS.get(b_key, "")
                 st.markdown(f"<div class='poll-box'><div class='kv'>{valb} {unitb}</div><div style='font-weight:700'>{b_label}</div><div class='small-muted' style='margin-top:6px'>{badgeb} {source_label_b}</div></div>", unsafe_allow_html=True)
 
-                
                 try:
                     baseb = float(valb) if isinstance(valb, (int, float)) or (isinstance(valb, str) and valb.replace('.','',1).isdigit()) else 12.0
                     histb = [round(max(0.1, baseb + np.random.normal(0, max(0.1, baseb*0.05))),1) for _ in range(10)]
